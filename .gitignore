@@ -1,0 +1,57 @@
+# CMake and build output
+/build/
+/build-*/
+/cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+CTestTestfile.cmake
+Makefile
+cmake_install.cmake
+compile_commands.json
+_deps/
+# Rust build output, including backend crates
+target/
+
+# Local CMake and tooling state
+.cache/
+.clangd/
+.ninja_deps
+.ninja_log
+*.user
+
+# Generated binaries and libraries
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.pdb
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local data and generated output
+*.ndjson
+*.log
+sample_corpus.txt
+perf_data/
+*.core
+core
+
+# Keep the internal engineering specification out of published repositories
+/specs.md
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
