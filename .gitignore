@@ -45,6 +45,7 @@ venv/
 *.log
 sample_corpus.txt
 perf_data/
+benchmarks/corpus_*
 *.core
 core
 

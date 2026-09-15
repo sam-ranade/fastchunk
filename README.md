@@ -89,9 +89,29 @@ When an optional backend is disabled, selecting it returns an explicit
 `tokenizer_unavailable` error. It never silently falls back to whitespace
 tokenization.
 
+### Input Path Lifetime
+
+Input paths and files must remain present, readable, and unchanged for the full
+duration of processing. Do not replace, rename, truncate, or modify an input
+file while FastChunk is reading or chunking it. Results are undefined if the
+input path is removed or replaced during processing. The `restricted_root`
+configuration is reserved for a future race-resistant, root-anchored I/O
+implementation and currently returns `unsupported_option` when configured.
+
 ## CLI
 
 The CLI applies defaults, loads YAML, applies command-line overrides, validates the effective configuration, and processes a file or directory.
+
+Build the CLI first:
+
+```bash
+cmake -S . -B build \
+  -DFASTCHUNK_BUILD_CLI=ON \
+  -DFASTCHUNK_BUILD_TESTS=ON
+cmake --build build --target fastchunk --parallel
+```
+
+Process a file and write chunk records as NDJSON:
 
 ```bash
 ./build/fastchunk chunk input.txt \
@@ -124,6 +144,70 @@ export:
 
 Useful overrides include `--tokenizer`, `--max-tokens`, `--overlap-tokens`, `--input-mode`, `--invalid-utf8`, `--recursive`, `--include-hidden`, `--workers`, `--result-order`, `--record-mode`, `--record-id-field`, `--on-malformed-record`, `--export`, and `--json-errors`.
 
+Use `--json-errors` when a machine-readable error response is required:
+
+```bash
+./build/fastchunk chunk missing.txt \
+  --tokenizer whitespace \
+  --max-tokens 256 \
+  --overlap-tokens 32 \
+  --export output.ndjson \
+  --json-errors
+```
+
+## Synthetic Benchmark Data
+
+The generator creates deterministic, UTF-8 benchmark inputs for disk and
+`mmap` testing. It writes files under `build/perf_data` by default and accepts
+`txt`, `md`, `json`, and `xml` formats:
+
+```bash
+python3 scripts/generate_perf_datasets.py \
+  --size-mb 50 \
+  --formats json \
+  --output-dir build/perf_data \
+  --seed 42
+```
+
+Generate the complete format set:
+
+```bash
+python3 scripts/generate_perf_datasets.py \
+  --size-mb 50 \
+  --formats all \
+  --output-dir build/perf_data
+```
+
+Generate the project benchmark sample sizes used for end-to-end checks:
+
+```bash
+python3 scripts/generate_perf_datasets.py --size-mb 50 --formats json \
+  --output-dir benchmarks
+python3 scripts/generate_perf_datasets.py --size-mb 10 --formats txt \
+  --output-dir benchmarks
+python3 scripts/generate_perf_datasets.py --size-mb 25 --formats xml \
+  --output-dir benchmarks
+```
+
+Run the CLI against a generated file:
+
+```bash
+./build/fastchunk chunk build/perf_data/corpus_50mb.json \
+  --tokenizer whitespace \
+  --max-tokens 256 \
+  --overlap-tokens 32 \
+  --input-mode zero_copy \
+  --invalid-utf8 error \
+  --export build/perf_data/corpus_50mb.ndjson
+```
+
+The same generator is available as a CMake target when benchmarks are enabled:
+
+```bash
+cmake -S . -B build -DFASTCHUNK_BUILD_BENCHMARKS=ON
+cmake --build build --target fastchunk_perf_data
+```
+
 ## Python
 
 The nanobind module exposes direct chunking and an owned streaming iterator:
@@ -135,6 +219,31 @@ for chunk in fastchunk.stream_file("input.txt", 256, 32, "whitespace"):
     print(chunk["text"])
 
 print(fastchunk.load_configuration_json("fastchunk.yaml"))
+```
+
+The Pythonic reader/chunker API is also available:
+
+```python
+import _fastchunk_cpp as fastchunk
+
+chunker = fastchunk.Chunker(256, 32, "whitespace")
+with fastchunk.Reader("input.txt") as reader:
+  chunks = chunker.chunk(reader)
+  print(chunks[0]["text"])
+```
+
+`Reader.bytes_view()` returns an owned Python `bytes` snapshot, so it remains
+valid after the reader is closed. Diagnostics are emitted as Python warnings by
+default. Use `fastchunk.set_warning_mode("ignore")` or
+`fastchunk.set_warning_mode("error")` to control warning handling.
+
+Benchmark results can be compared with the versioned baseline:
+
+```bash
+./build/fastchunk_bench --generated-mb 1 --iterations 10 \
+  --json-output build/benchmark.json
+python3 scripts/check_benchmark_baseline.py \
+  benchmarks/baseline_benchmarks.json build/benchmark.json
 ```
 
 ## C++ and C APIs

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "benchmarks": {
+    "single_threaded": {
+      "throughput_mbps": 14.1127
+    },
+    "parallel": {
+      "throughput_mbps": 31.7403
+    }
+  }
+}

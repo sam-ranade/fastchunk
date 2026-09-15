@@ -1,5 +1,9 @@
 > **Implementation note:** The repository includes a configuration-driven CLI, shared YAML configuration library, directory pipeline, NDJSON exporter, C ABI, nanobind Python module, and optional native Rust tokenizer backends. External telemetry delivery is optional and requires libcurl.
 
+Input files must remain present, readable, and unchanged for the duration of
+processing. Race-resistant `restricted_root` I/O is planned but not enabled;
+using that option currently returns `unsupported_option`.
+
 fastchunk/
 ├── include/fastchunk/      # Public C++ Headers & C ABI
 │   ├── core.h              # Core interfaces, Result/Error, and options

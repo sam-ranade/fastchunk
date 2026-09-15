@@ -4,10 +4,15 @@
 #include "parallel_chunker.h"
 #include <algorithm>
 #include <chrono>
+#include <fstream>
 #include <iostream>
 #include <numeric>
 #include <random>
 #include <string>
+#include <thread>
+#if !defined(_WIN32)
+#include <sys/resource.h>
+#endif
 #include <vector>
 
 namespace
@@ -46,7 +51,29 @@ std::vector<std::byte> generate_benchmark_payload(std::size_t target_bytes,
 
 }
 
-void print_percentile_stats(std::vector<double>& latencies_ms,
+struct BenchmarkStats
+{
+    double throughput_mbps { 0.0 };
+    double p50_ms { 0.0 };
+    double p95_ms { 0.0 };
+    double p99_ms { 0.0 };
+};
+
+std::size_t peak_memory_bytes()
+{
+#if defined(__linux__)
+    struct rusage usage {};
+    if (getrusage(RUSAGE_SELF, &usage) == 0)
+        return static_cast<std::size_t>(usage.ru_maxrss) * 1024ULL;
+#elif defined(__APPLE__)
+    struct rusage usage {};
+    if (getrusage(RUSAGE_SELF, &usage) == 0)
+        return static_cast<std::size_t>(usage.ru_maxrss);
+#endif
+    return 0;
+}
+
+BenchmarkStats print_percentile_stats(std::vector<double>& latencies_ms,
     double total_bytes)
 {
     std::sort(latencies_ms.begin(), latencies_ms.end());
@@ -67,6 +94,7 @@ void print_percentile_stats(std::vector<double>& latencies_ms,
     std::cout << "p95:         " << p95 << " ms\n";
     std::cout << "p99:         " << p99 << " ms\n";
     std::cout << "--------------------------------------------\n";
+    return { mb_s, p50, p95, p99 };
 }
 
 int main(int argc, char** argv)
@@ -75,6 +103,7 @@ int main(int argc, char** argv)
     std::size_t generated_mb = 0;
     int iterations = 50;
     std::uint32_t seed = 42;
+    std::string json_output;
 
     for (int index = 1; index < argc; ++index)
     {
@@ -85,6 +114,8 @@ int main(int argc, char** argv)
             iterations = std::stoi(argv[++index]);
         else if (argument == "--seed" && index + 1 < argc)
             seed = static_cast<std::uint32_t>(std::stoul(argv[++index]));
+        else if (argument == "--json-output" && index + 1 < argc)
+            json_output = argv[++index];
         else if (test_file.empty())
             test_file = argument;
     }
@@ -145,7 +176,8 @@ int main(int argc, char** argv)
         std::chrono::duration<double, std::milli> elapsed = end - start;
         st_latencies.push_back(elapsed.count());
     }
-    print_percentile_stats(st_latencies, static_cast<double>(input.size()));
+    const auto single_threaded = print_percentile_stats(
+        st_latencies, static_cast<double>(input.size()));
 
     // --- Benchmark 2: Multi-Threaded Parallel Execution ---
     std::cout << "\n[2/2] Running Multi-Threaded Parallel Chunker Benchmark...\n";
@@ -163,7 +195,51 @@ int main(int argc, char** argv)
         std::chrono::duration<double, std::milli> elapsed = end - start;
         mt_latencies.push_back(elapsed.count());
     }
-    print_percentile_stats(mt_latencies, static_cast<double>(input.size()));
+    const auto parallel = print_percentile_stats(
+        mt_latencies, static_cast<double>(input.size()));
+
+    if (!json_output.empty())
+    {
+        std::ofstream output(json_output);
+        if (!output)
+        {
+            std::cerr << "Benchmark Error: Cannot write " << json_output << "\n";
+            return 1;
+        }
+        output << "{\"schema_version\":1,\"input_bytes\":" << input.size()
+               << ",\"iterations\":" << iterations
+               << ",\"tokenizer\":\"whitespace\",\"seed\":" << seed
+               << ",\"worker_count\":" << std::thread::hardware_concurrency()
+               << ",\"compiler\":\"";
+    #if defined(__clang__)
+        output << "clang";
+    #elif defined(__GNUC__)
+        output << "gcc";
+    #elif defined(_MSC_VER)
+        output << "msvc";
+    #else
+        output << "unknown";
+    #endif
+        output << "\",\"operating_system\":\"";
+    #if defined(_WIN32)
+        output << "windows";
+    #elif defined(__APPLE__)
+        output << "macos";
+    #elif defined(__linux__)
+        output << "linux";
+    #else
+        output << "unknown";
+    #endif
+        output << "\",\"peak_memory_bytes\":" << peak_memory_bytes()
+               << ",\"benchmarks\":{\"single_threaded\":{\"throughput_mbps\":"
+               << single_threaded.throughput_mbps << ",\"p50_ms\":"
+               << single_threaded.p50_ms << ",\"p95_ms\":"
+               << single_threaded.p95_ms << ",\"p99_ms\":"
+               << single_threaded.p99_ms << "},\"parallel\":{\"throughput_mbps\":"
+               << parallel.throughput_mbps << ",\"p50_ms\":" << parallel.p50_ms
+               << ",\"p95_ms\":" << parallel.p95_ms << ",\"p99_ms\":"
+               << parallel.p99_ms << "}}}\n";
+    }
 
     return 0;
 }

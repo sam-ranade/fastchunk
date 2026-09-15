@@ -2,6 +2,7 @@
 #include "fastchunk/constants.h"
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 
 #if defined(FASTCHUNK_HAS_TIKTOKEN)
 #include "fastchunk_tiktoken.h"
@@ -55,6 +56,7 @@ TiktokenTokenizer::TiktokenTokenizer(std::string model_name)
     if (encoding.empty())
     {
         backend_error_ = "Tiktoken requires encoding cl100k_base or o200k_base.";
+        backend_error_code_ = static_cast<std::uint32_t>(ErrorCode::tokenizer_encoding_unsupported);
         return;
     }
     fastchunk_tiktoken_backend* handle = nullptr;
@@ -62,12 +64,18 @@ TiktokenTokenizer::TiktokenTokenizer(std::string model_name)
     if (fastchunk_tiktoken_create(encoding.c_str(), &handle, &error) != 0)
     {
         backend_error_ = error ? error : "Tiktoken backend initialization failed.";
+        backend_error_code_ = static_cast<std::uint32_t>(
+            encoding == constants::tokenizer::cl100k_base
+                || encoding == constants::tokenizer::o200k_base
+            ? ErrorCode::tokenizer_failed
+            : ErrorCode::tokenizer_encoding_unsupported);
         fastchunk_tiktoken_free_error(error);
         return;
     }
     backend_ = handle;
 #else
     backend_error_ = "Tiktoken backend is disabled; reconfigure with FASTCHUNK_ENABLE_TIKTOKEN=ON.";
+    backend_error_code_ = static_cast<std::uint32_t>(ErrorCode::tokenizer_unavailable);
 #endif
 }
 
@@ -84,8 +92,9 @@ TiktokenTokenizer::encode(std::string_view text)
 #if defined(FASTCHUNK_HAS_TIKTOKEN)
     if (!backend_)
         return Result<std::vector<EncodedToken>>(Error {
-            .code = static_cast<std::uint32_t>(ErrorCode::tokenizer_unavailable),
-            .name = "tokenizer_unavailable",
+            .code = backend_error_code_,
+            .name = backend_error_code_ == static_cast<std::uint32_t>(ErrorCode::tokenizer_encoding_unsupported)
+                ? "tokenizer_encoding_unsupported" : "tokenizer_unavailable",
             .description = "The requested tokenizer backend is not registered in this build.",
             .message = backend_error_ });
 
@@ -141,12 +150,16 @@ HuggingFaceTokenizer::HuggingFaceTokenizer(const std::string& json_path)
     if (fastchunk_huggingface_create(json_path.c_str(), &handle, &error) != 0)
     {
         backend_error_ = error ? error : "Hugging Face tokenizer initialization failed.";
+        backend_error_code_ = std::filesystem::exists(json_path)
+            ? static_cast<std::uint32_t>(ErrorCode::tokenizer_model_invalid)
+            : static_cast<std::uint32_t>(ErrorCode::tokenizer_model_not_found);
         fastchunk_huggingface_free_error(error);
         return;
     }
     hf_handle_ = handle;
 #else
     backend_error_ = "Hugging Face backend is disabled; reconfigure with FASTCHUNK_ENABLE_HUGGINGFACE=ON.";
+    backend_error_code_ = static_cast<std::uint32_t>(ErrorCode::tokenizer_unavailable);
 #endif
 }
 
@@ -164,8 +177,9 @@ HuggingFaceTokenizer::encode(std::string_view text)
     if (!hf_handle_)
     {
         return Result<std::vector<EncodedToken>>(Error {
-            .code = static_cast<std::uint32_t>(ErrorCode::tokenizer_model_invalid),
-            .name = "tokenizer_model_invalid",
+            .code = backend_error_code_,
+            .name = backend_error_code_ == static_cast<std::uint32_t>(ErrorCode::tokenizer_model_not_found)
+                ? "tokenizer_model_not_found" : "tokenizer_model_invalid",
             .description = "The tokenizer files are present but invalid or incomplete.",
             .message = backend_error_,
             .path = model_path_ });

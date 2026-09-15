@@ -26,11 +26,12 @@ if(FASTCHUNK_ENABLE_TIKTOKEN)
   set(FASTCHUNK_TIKTOKEN_LIB ${CMAKE_CURRENT_SOURCE_DIR}/backends/tiktoken/target/release/libfastchunk_tiktoken.a)
   add_custom_command(
     OUTPUT ${FASTCHUNK_TIKTOKEN_LIB}
-    COMMAND ${CARGO_EXECUTABLE} build --release --manifest-path
+    COMMAND ${CARGO_EXECUTABLE} build --release --locked --manifest-path
       ${CMAKE_CURRENT_SOURCE_DIR}/backends/tiktoken/Cargo.toml
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/backends/tiktoken
     DEPENDS
       ${CMAKE_CURRENT_SOURCE_DIR}/backends/tiktoken/Cargo.toml
+      ${CMAKE_CURRENT_SOURCE_DIR}/backends/tiktoken/Cargo.lock
       ${CMAKE_CURRENT_SOURCE_DIR}/backends/tiktoken/src/lib.rs
     COMMENT "Building native Tiktoken backend")
   add_custom_target(fastchunk-tiktoken-build DEPENDS ${FASTCHUNK_TIKTOKEN_LIB})
@@ -45,11 +46,12 @@ if(FASTCHUNK_ENABLE_HUGGINGFACE)
   set(FASTCHUNK_HUGGINGFACE_LIB ${CMAKE_CURRENT_SOURCE_DIR}/backends/huggingface/target/release/libfastchunk_huggingface.a)
   add_custom_command(
     OUTPUT ${FASTCHUNK_HUGGINGFACE_LIB}
-    COMMAND ${CARGO_EXECUTABLE} build --release --manifest-path
+    COMMAND ${CARGO_EXECUTABLE} build --release --locked --manifest-path
       ${CMAKE_CURRENT_SOURCE_DIR}/backends/huggingface/Cargo.toml
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/backends/huggingface
     DEPENDS
       ${CMAKE_CURRENT_SOURCE_DIR}/backends/huggingface/Cargo.toml
+      ${CMAKE_CURRENT_SOURCE_DIR}/backends/huggingface/Cargo.lock
       ${CMAKE_CURRENT_SOURCE_DIR}/backends/huggingface/src/lib.rs
     COMMENT "Building native Hugging Face backend")
   add_custom_target(fastchunk-huggingface-build DEPENDS ${FASTCHUNK_HUGGINGFACE_LIB})
@@ -176,6 +178,7 @@ if(FASTCHUNK_BUILD_TESTS)
     tests/unit/config.cpp
     tests/unit/directory_pipeline.cpp
     tests/unit/telemetry.cpp
+    tests/unit/tokenizer_backend.cpp
   )
   target_link_libraries(fastchunk-tests PRIVATE fastchunk-config fastchunk-c Catch2::Catch2WithMain)
   include(CTest)

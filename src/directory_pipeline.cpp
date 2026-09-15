@@ -1,6 +1,7 @@
 #include "fastchunk/directory_pipeline.h"
 
 #include "fastchunk/factory.h"
+#include "parallel_chunker.h"
 #include "fastchunk/tokenizers.h"
 
 #include <algorithm>
@@ -136,8 +137,17 @@ Result<DocumentResult> DirectoryPipeline::process_file(
             "Metadata exceeds max_metadata_size_mb.", path.string());
         return Result<DocumentResult>(std::move(document));
     }
-    auto chunks = create_chunker()->chunk_buffer(input.value().data, options,
-        *tokenizer.value(), context, cancellation);
+    const auto workers = configuration.concurrency.workers == 0
+        ? std::thread::hardware_concurrency()
+        : configuration.concurrency.workers;
+    auto chunks = [&]() -> Result<std::vector<ChunkResult>>
+    {
+        if (workers > 1 && input.value().data.size() >= 1024 * 1024)
+            return ParallelChunker::chunk_buffer_parallel(input.value().data,
+                options, *tokenizer.value(), context, *create_chunker(), workers);
+        return create_chunker()->chunk_buffer(input.value().data, options,
+            *tokenizer.value(), context, cancellation);
+    }();
     if (!chunks.has_value())
     {
         document.error = *chunks.error();
@@ -339,10 +349,6 @@ Result<void> DirectoryPipeline::export_streaming(
             .tokenizer_name = configuration.tokenizer.type,
             .tokenizer_configuration = configuration.effective_json()
         };
-        auto stream = create_chunker()->stream_buffer(input.value().data, options,
-            *tokenizer.value(), context, cancellation);
-        if (!stream.has_value())
-            return Result<void>(*stream.error());
         ExportMetadata metadata {
             .doc_id = path.string(),
             .source_path = path.string(),
@@ -351,6 +357,29 @@ Result<void> DirectoryPipeline::export_streaming(
             .effective_configuration = configuration.effective_json()
         };
         const auto started = std::chrono::steady_clock::now();
+        const auto workers = configuration.concurrency.workers == 0
+            ? std::thread::hardware_concurrency()
+            : configuration.concurrency.workers;
+        if (configuration.input.record_mode == InputOptions::RecordMode::none
+            && workers > 1 && input.value().data.size() >= 1024 * 1024)
+        {
+            if (auto* owned_exporter = dynamic_cast<IExporter*>(&exporter))
+            {
+                auto chunks = ParallelChunker::chunk_buffer_parallel(
+                    input.value().data, options, *tokenizer.value(), context,
+                    *create_chunker(), workers);
+                if (!chunks.has_value())
+                    return Result<void>(*chunks.error());
+                auto exported = owned_exporter->export_chunks(chunks.value(), metadata);
+                if (!exported.has_value())
+                    return exported;
+                continue;
+            }
+        }
+        auto stream = create_chunker()->stream_buffer(input.value().data, options,
+            *tokenizer.value(), context, cancellation);
+        if (!stream.has_value())
+            return Result<void>(*stream.error());
         auto exported = exporter.export_stream(*stream.value(), metadata, cancellation);
         if (!exported.has_value())
             return exported;

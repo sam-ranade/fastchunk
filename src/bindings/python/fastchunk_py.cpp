@@ -17,6 +17,30 @@ using namespace nb::literals;
 
 namespace
 {
+std::string warning_mode = "default";
+
+void emit_diagnostics(std::span<const fastchunk::Diagnostic> diagnostics)
+{
+    if (diagnostics.empty() || warning_mode == "ignore")
+        return;
+    auto warnings = nb::module_::import_("warnings");
+    for (const auto& diagnostic : diagnostics)
+        warnings.attr("warn")(diagnostic.message);
+}
+
+const char* source_offset_kind_name(fastchunk::ChunkResult::SourceOffsetKind kind)
+{
+    switch (kind)
+    {
+    case fastchunk::ChunkResult::SourceOffsetKind::exact:
+        return "exact";
+    case fastchunk::ChunkResult::SourceOffsetKind::record:
+        return "record";
+    default:
+        return "unavailable";
+    }
+}
+
 struct FastchunkPythonError : std::runtime_error
 {
     explicit FastchunkPythonError(const fastchunk::Error& value)
@@ -116,12 +140,12 @@ void set_python_error(PyObject* exception_type, const fastchunk::Error& error)
     case fastchunk::ErrorCode::invalid_argument:
         throw InputError(error);
     case fastchunk::ErrorCode::tokenizer_unavailable:
+    case fastchunk::ErrorCode::tokenizer_dependency_missing:
+        throw DependencyError(error);
     case fastchunk::ErrorCode::tokenizer_model_not_found:
     case fastchunk::ErrorCode::tokenizer_model_invalid:
     case fastchunk::ErrorCode::tokenizer_failed:
         throw TokenizerError(error);
-    case fastchunk::ErrorCode::tokenizer_dependency_missing:
-        throw DependencyError(error);
     case fastchunk::ErrorCode::cancelled:
         throw CancellationError(error);
     case fastchunk::ErrorCode::unsupported_option:
@@ -243,6 +267,7 @@ public:
         auto result = stream_->next(view);
         if (!result.has_value())
             raise_python_error(*result.error());
+        emit_diagnostics(result.diagnostics());
         if (!result.value())
             throw nb::stop_iteration();
         nb::dict chunk;
@@ -254,6 +279,17 @@ public:
         chunk["start_byte"] = view.start_byte;
         chunk["end_byte"] = view.end_byte;
         chunk["chunk_index"] = view.chunk_index;
+        chunk["metadata"] = std::string(view.metadata);
+        chunk["tokenizer_name"] = std::string(view.tokenizer_name);
+        chunk["tokenizer_configuration"] = std::string(view.tokenizer_configuration);
+        chunk["source_start_byte"] = view.has_source_offsets
+            ? nb::object(nb::int_(view.source_start_byte))
+            : nb::none();
+        chunk["source_end_byte"] = view.has_source_offsets
+            ? nb::object(nb::int_(view.source_end_byte))
+            : nb::none();
+        chunk["has_source_offsets"] = view.has_source_offsets;
+        chunk["source_offset_kind"] = source_offset_kind_name(view.source_offset_kind);
         return chunk;
     }
 
@@ -269,11 +305,118 @@ private:
     std::shared_ptr<fastchunk::ITokenizer> tokenizer_;
     std::unique_ptr<fastchunk::IChunkStream> stream_;
 };
+
+class PythonReader
+{
+public:
+    explicit PythonReader(std::string path)
+        : path_(std::move(path))
+        , reader_(std::shared_ptr<fastchunk::IReader>(
+              fastchunk::create_mmap_reader().release()))
+    {
+        open();
+    }
+
+    void open()
+    {
+        auto result = reader_->open(path_, {});
+        if (!result.has_value())
+            raise_python_error(*result.error());
+        buffer_ = result.value();
+        open_ = true;
+    }
+
+    void close()
+    {
+        if (open_)
+            (void)reader_->close();
+        buffer_ = {};
+        open_ = false;
+    }
+
+    ~PythonReader() { close(); }
+    const fastchunk::FileBuffer& buffer() const { return buffer_; }
+    const std::string& path() const { return path_; }
+    nb::bytes bytes_view() const
+    {
+        return nb::bytes(reinterpret_cast<const char*>(buffer_.data.data()),
+            buffer_.data.size());
+    }
+
+private:
+    std::string path_;
+    std::shared_ptr<fastchunk::IReader> reader_;
+    fastchunk::FileBuffer buffer_;
+    bool open_ { false };
+};
+
+class PythonChunker
+{
+public:
+    PythonChunker(std::size_t max_tokens, std::size_t overlap_tokens,
+        std::string tokenizer_name)
+        : options_ { .max_tokens = max_tokens, .overlap_tokens = overlap_tokens }
+        , tokenizer_name_(std::move(tokenizer_name))
+    {
+        auto result = fastchunk::create_tokenizer_from_name(tokenizer_name_);
+        if (!result.has_value())
+            raise_python_error(*result.error());
+        tokenizer_ = std::shared_ptr<fastchunk::ITokenizer>(
+            std::move(result).value().release());
+    }
+
+    nb::list chunk(const PythonReader& reader)
+    {
+        fastchunk::ChunkInputContext context {
+            .doc_id = reader.path(), .tokenizer_name = tokenizer_name_ };
+        auto result = fastchunk::create_chunker()->chunk_buffer(
+            reader.buffer().data, options_, *tokenizer_, context);
+        if (!result.has_value())
+            raise_python_error(*result.error());
+        emit_diagnostics(result.diagnostics());
+
+        nb::list output;
+        for (const auto& value : result.value())
+        {
+            nb::dict item;
+            item["text"] = value.text;
+            item["tokens"] = value.tokens;
+            item["doc_id"] = value.doc_id;
+            item["chunk_id"] = value.chunk_id;
+            item["record_id"] = value.record_id;
+            item["start_byte"] = value.start_byte;
+            item["end_byte"] = value.end_byte;
+            item["source_start_byte"] = value.has_source_offsets
+                ? nb::object(nb::int_(value.source_start_byte)) : nb::none();
+            item["source_end_byte"] = value.has_source_offsets
+                ? nb::object(nb::int_(value.source_end_byte)) : nb::none();
+            item["has_source_offsets"] = value.has_source_offsets;
+            item["source_offset_kind"] = source_offset_kind_name(value.source_offset_kind);
+            item["chunk_index"] = value.chunk_index;
+            item["metadata"] = value.metadata;
+            output.append(item);
+        }
+        return output;
+    }
+
+private:
+    fastchunk::ChunkOptions options_;
+    std::string tokenizer_name_;
+    std::shared_ptr<fastchunk::ITokenizer> tokenizer_;
+};
 } // namespace
 
 NB_MODULE(_fastchunk_cpp, m)
 {
     m.doc() = "High-performance zero-copy text chunking engine Python bindings";
+
+    m.def("set_warning_mode", [](const std::string& mode)
+        {
+            if (mode != "default" && mode != "ignore" && mode != "error")
+                throw std::invalid_argument("warning mode must be default, ignore, or error");
+            warning_mode = mode;
+            nb::module_::import_("warnings").attr("simplefilter")(mode);
+        }, "mode"_a);
 
     nb::exception<FastchunkPythonError> base_error(m, "FastchunkError");
     nb::exception<ConfigurationError> configuration_error(m, "ConfigurationError",
@@ -377,6 +520,19 @@ NB_MODULE(_fastchunk_cpp, m)
     // Reader API
     nb::class_<fastchunk::IReader>(m, "IReader");
 
+    nb::class_<PythonReader>(m, "Reader")
+        .def(nb::init<std::string>())
+        .def("close", &PythonReader::close)
+        .def("bytes_view", &PythonReader::bytes_view)
+        .def("__enter__", [](PythonReader& reader) -> PythonReader& { return reader; },
+            nb::rv_policy::reference_internal)
+        .def("__exit__", [](PythonReader& reader, nb::args) { reader.close(); });
+
+    nb::class_<PythonChunker>(m, "Chunker")
+        .def(nb::init<std::size_t, std::size_t, std::string>(),
+            "max_tokens"_a, "overlap_tokens"_a, "tokenizer"_a = "whitespace")
+        .def("chunk", &PythonChunker::chunk);
+
     m.def("create_mmap_reader", []()
         { return fastchunk::create_mmap_reader(); });
 
@@ -418,14 +574,19 @@ NB_MODULE(_fastchunk_cpp, m)
             fastchunk::ChunkInputContext ctx { .tokenizer_name = tokenizer_name };
 
             // Run chunker while releasing Python GIL
-            nb::gil_scoped_release release;
-            auto res = chunker->chunk_buffer(open_res.value().data, chk_opts,
-                *tok_res.value(), ctx);
+            fastchunk::Result<std::vector<fastchunk::ChunkResult>> res(
+                std::vector<fastchunk::ChunkResult> {});
+            {
+                nb::gil_scoped_release release;
+                res = chunker->chunk_buffer(open_res.value().data, chk_opts,
+                    *tok_res.value(), ctx);
+            }
 
             if (!res.has_value())
             {
                 raise_python_error(*res.error());
             }
+            emit_diagnostics(res.diagnostics());
 
             return res.value();
         },

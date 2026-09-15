@@ -85,6 +85,19 @@ fastchunk_status_t set_error(std::optional<fastchunk::Error>& slot,
     return error.code;
 }
 
+fastchunk_status_t set_output_error(fastchunk_error_t** output,
+    const fastchunk::Error& error)
+{
+    if (output)
+    {
+        *output = new (std::nothrow) fastchunk_error { .value = error };
+        if (!*output)
+            return static_cast<fastchunk_status_t>(
+                fastchunk::ErrorCode::resource_limit_exceeded);
+    }
+    return error.code;
+}
+
 fastchunk_status_t invalid(std::optional<fastchunk::Error>& slot,
     const char* message)
 {
@@ -302,12 +315,18 @@ extern "C"
         if (error)
             *error = nullptr;
         if (!output)
-            return static_cast<fastchunk_status_t>(
-                fastchunk::ErrorCode::invalid_argument);
+            return set_output_error(error, fastchunk::Error {
+                .code = static_cast<std::uint32_t>(fastchunk::ErrorCode::invalid_argument),
+                .name = "invalid_argument",
+                .description = "A public argument is missing, malformed, or out of range.",
+                .message = "Reader output handle is required." });
         *output = new (std::nothrow) fastchunk_reader();
         if (!*output)
-            return static_cast<fastchunk_status_t>(
-                fastchunk::ErrorCode::resource_limit_exceeded);
+            return set_output_error(error, fastchunk::Error {
+                .code = static_cast<std::uint32_t>(fastchunk::ErrorCode::resource_limit_exceeded),
+                .name = "resource_limit_exceeded",
+                .description = "A configured memory, size, or processing limit was exceeded.",
+                .message = "Unable to allocate reader handle." });
         return k_ok;
     }
 
@@ -427,8 +446,11 @@ extern "C"
         if (error)
             *error = nullptr;
         if (!name || !output || !name->data || name->size == 0)
-            return static_cast<fastchunk_status_t>(
-                fastchunk::ErrorCode::invalid_argument);
+            return set_output_error(error, fastchunk::Error {
+                .code = static_cast<std::uint32_t>(fastchunk::ErrorCode::invalid_argument),
+                .name = "invalid_argument",
+                .description = "A public argument is missing, malformed, or out of range.",
+                .message = "Tokenizer name and output handle are required." });
         std::string tokenizer_name(reinterpret_cast<const char*>(name->data),
             name->size);
         std::string configuration_value;
@@ -439,11 +461,14 @@ extern "C"
         auto result = fastchunk::create_tokenizer_from_name(tokenizer_name,
             configuration_value);
         if (!result.has_value())
-            return result.error()->code;
+            return set_output_error(error, *result.error());
         auto handle = new (std::nothrow) fastchunk_tokenizer();
         if (!handle)
-            return static_cast<fastchunk_status_t>(
-                fastchunk::ErrorCode::resource_limit_exceeded);
+            return set_output_error(error, fastchunk::Error {
+                .code = static_cast<std::uint32_t>(fastchunk::ErrorCode::resource_limit_exceeded),
+                .name = "resource_limit_exceeded",
+                .description = "A configured memory, size, or processing limit was exceeded.",
+                .message = "Unable to allocate tokenizer handle." });
         handle->tokenizer = std::shared_ptr<fastchunk::ITokenizer>(std::move(result).value());
         handle->name = std::move(tokenizer_name);
         handle->configuration = std::move(configuration_value);
@@ -465,15 +490,24 @@ extern "C"
         if (error)
             *error = nullptr;
         if (!options || !tokenizer || !output)
-            return static_cast<fastchunk_status_t>(
-                fastchunk::ErrorCode::invalid_argument);
+            return set_output_error(error, fastchunk::Error {
+                .code = static_cast<std::uint32_t>(fastchunk::ErrorCode::invalid_argument),
+                .name = "invalid_argument",
+                .description = "A public argument is missing, malformed, or out of range.",
+                .message = "Chunker options, tokenizer, and output handle are required." });
         if (options->max_tokens == 0 || options->overlap_tokens >= options->max_tokens)
-            return static_cast<fastchunk_status_t>(
-                fastchunk::ErrorCode::invalid_configuration);
+            return set_output_error(error, fastchunk::Error {
+                .code = static_cast<std::uint32_t>(fastchunk::ErrorCode::invalid_configuration),
+                .name = "invalid_configuration",
+                .description = "Configuration values conflict or violate a documented rule.",
+                .message = "max_tokens must be greater than overlap_tokens and zero." });
         auto handle = new (std::nothrow) fastchunk_chunker();
         if (!handle)
-            return static_cast<fastchunk_status_t>(
-                fastchunk::ErrorCode::resource_limit_exceeded);
+            return set_output_error(error, fastchunk::Error {
+                .code = static_cast<std::uint32_t>(fastchunk::ErrorCode::resource_limit_exceeded),
+                .name = "resource_limit_exceeded",
+                .description = "A configured memory, size, or processing limit was exceeded.",
+                .message = "Unable to allocate chunker handle." });
         handle->options.max_tokens = options->max_tokens;
         handle->options.overlap_tokens = options->overlap_tokens;
         handle->options.metadata_collision = static_cast<fastchunk::ChunkOptions::MetadataCollisionPolicy>(
@@ -613,12 +647,18 @@ extern "C"
         if (error)
             *error = nullptr;
         if (!output)
-            return static_cast<fastchunk_status_t>(
-                fastchunk::ErrorCode::invalid_argument);
+            return set_output_error(error, fastchunk::Error {
+                .code = static_cast<std::uint32_t>(fastchunk::ErrorCode::invalid_argument),
+                .name = "invalid_argument",
+                .description = "A public argument is missing, malformed, or out of range.",
+                .message = "Cancellation output handle is required." });
         *output = new (std::nothrow) fastchunk_cancellation();
         return *output ? k_ok
-                       : static_cast<fastchunk_status_t>(
-                             fastchunk::ErrorCode::resource_limit_exceeded);
+                       : set_output_error(error, fastchunk::Error {
+                             .code = static_cast<std::uint32_t>(fastchunk::ErrorCode::resource_limit_exceeded),
+                             .name = "resource_limit_exceeded",
+                             .description = "A configured memory, size, or processing limit was exceeded.",
+                             .message = "Unable to allocate cancellation handle." });
     }
     void fastchunk_cancellation_request(fastchunk_cancellation_t* cancellation)
     {

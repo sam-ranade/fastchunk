@@ -1,0 +1,94 @@
+name: fastchunk-ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  default:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Configure
+        run: >-
+          cmake -S . -B build
+          -DFASTCHUNK_BUILD_TESTS=ON
+          -DFASTCHUNK_BUILD_CLI=ON
+          -DFASTCHUNK_BUILD_EXAMPLES=ON
+          -DFASTCHUNK_BUILD_BENCHMARKS=ON
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Generate benchmark data
+        run: cmake --build build --target fastchunk_perf_data
+      - name: Run benchmark
+        run: ./build/fastchunk_bench --generated-mb 1 --iterations 3 --json-output build/benchmark.json
+      - name: Check benchmark baseline
+        if: github.event_name == 'workflow_dispatch'
+        run: python3 scripts/check_benchmark_baseline.py benchmarks/baseline_benchmarks.json build/benchmark.json
+
+  native-tokenizers:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - backend: tiktoken
+            option: TIKTOKEN
+          - backend: huggingface
+            option: HUGGINGFACE
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Configure
+        run: >-
+          cmake -S . -B build-${{ matrix.backend }}
+          -DFASTCHUNK_ENABLE_${{ matrix.option }}=ON
+          -DFASTCHUNK_BUILD_TESTS=ON
+          -DFASTCHUNK_BUILD_CLI=OFF
+          -DFASTCHUNK_BUILD_EXAMPLES=OFF
+      - name: Build
+        run: cmake --build build-${{ matrix.backend }} --parallel
+      - name: Test
+        run: ctest --test-dir build-${{ matrix.backend }} --output-on-failure
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure ASan/UBSan
+        env:
+          CXXFLAGS: -fsanitize=address,undefined -fno-omit-frame-pointer
+          LDFLAGS: -fsanitize=address,undefined
+        run: >-
+          cmake -S . -B build-sanitize
+          -DFASTCHUNK_BUILD_TESTS=ON
+          -DFASTCHUNK_BUILD_CLI=OFF
+          -DFASTCHUNK_BUILD_EXAMPLES=OFF
+      - name: Build
+        run: cmake --build build-sanitize --parallel
+      - name: Test
+        run: ctest --test-dir build-sanitize --output-on-failure
+
+  thread-sanitizer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure TSan
+        env:
+          CXXFLAGS: -fsanitize=thread -fno-omit-frame-pointer
+          LDFLAGS: -fsanitize=thread
+        run: >-
+          cmake -S . -B build-tsan
+          -DFASTCHUNK_BUILD_TESTS=ON
+          -DFASTCHUNK_BUILD_CLI=OFF
+          -DFASTCHUNK_BUILD_EXAMPLES=OFF
+      - name: Build
+        run: cmake --build build-tsan --parallel
+      - name: Test
+        run: ctest --test-dir build-tsan --output-on-failure

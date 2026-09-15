@@ -3,9 +3,11 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <initializer_list>
 #include <sstream>
 
 namespace fastchunk
@@ -39,6 +41,21 @@ namespace
         const auto value = node[std::string(key)];
         return value && !value.IsNull() ? std::optional<std::size_t>(value.as<std::size_t>())
                                         : std::nullopt;
+    }
+
+    Result<void> reject_unknown_keys(const YAML::Node& node,
+        std::initializer_list<std::string_view> allowed,
+        std::string_view section)
+    {
+        for (const auto& entry : node)
+        {
+            const auto key = entry.first.as<std::string>();
+            const auto found = std::find(allowed.begin(), allowed.end(), key);
+            if (found == allowed.end())
+                return Result<void>(config_error(ErrorCode::invalid_configuration,
+                    "Unknown configuration key in " + std::string(section) + ": " + key));
+        }
+        return Result<void>();
     }
 
 } // namespace
@@ -106,19 +123,8 @@ Result<void> Configuration::validate() const
         return Result<void>(config_error(ErrorCode::invalid_configuration,
             "telemetry.endpoint is required when telemetry is enabled."));
     if (!input.restricted_root.empty())
-    {
-        const auto root = std::filesystem::weakly_canonical(input.restricted_root);
-        const auto path = std::filesystem::weakly_canonical(input.path);
-        auto root_it = root.begin();
-        auto path_it = path.begin();
-        for (; root_it != root.end() && path_it != path.end(); ++root_it, ++path_it)
-            if (*root_it != *path_it)
-                return Result<void>(config_error(ErrorCode::invalid_configuration,
-                    "input.path is outside input.restricted_root."));
-        if (root_it != root.end())
-            return Result<void>(config_error(ErrorCode::invalid_configuration,
-                "input.path is outside input.restricted_root."));
-    }
+        return Result<void>(config_error(ErrorCode::unsupported_option,
+            "input.restricted_root requires race-resistant root-anchored I/O, which is unavailable in this build."));
     if (export_options.type != "none" && export_options.type != "ndjson")
         return Result<void>(config_error(ErrorCode::unsupported_option,
             "Unknown export.type: " + export_options.type));
@@ -165,6 +171,12 @@ Result<Configuration> load_configuration(std::string_view path)
         const auto input = root["input"];
         if (input)
         {
+            auto keys = reject_unknown_keys(input,
+                { "path", "restricted_root", "mode", "invalid_utf8", "recursive",
+                    "include_hidden", "record_mode", "record_id_field", "on_malformed_record" },
+                "input");
+            if (!keys.has_value())
+                return Result<Configuration>(*keys.error());
             configuration.input.path = scalar(input, "path");
             configuration.input.restricted_root = scalar(input, "restricted_root");
             const auto mode = scalar(input, "mode", "zero_copy");
@@ -187,6 +199,10 @@ Result<Configuration> load_configuration(std::string_view path)
         const auto tokenizer = root["tokenizer"];
         if (tokenizer)
         {
+            auto keys = reject_unknown_keys(tokenizer,
+                { "type", "encoding", "tokenizer_path" }, "tokenizer");
+            if (!keys.has_value())
+                return Result<Configuration>(*keys.error());
             configuration.tokenizer.type = scalar(tokenizer, "type", configuration.tokenizer.type);
             configuration.tokenizer.encoding = scalar(tokenizer, "encoding");
             configuration.tokenizer.tokenizer_path = scalar(tokenizer, "tokenizer_path");
@@ -194,6 +210,10 @@ Result<Configuration> load_configuration(std::string_view path)
         const auto chunking = root["chunking"];
         if (chunking)
         {
+            auto keys = reject_unknown_keys(chunking,
+                { "max_tokens", "overlap_tokens", "metadata_collision" }, "chunking");
+            if (!keys.has_value())
+                return Result<Configuration>(*keys.error());
             configuration.chunking.max_tokens = size_value(chunking, "max_tokens");
             configuration.chunking.overlap_tokens = size_value(chunking, "overlap_tokens");
             if (scalar(chunking, "metadata_collision", "error") == "ignore")
@@ -202,12 +222,21 @@ Result<Configuration> load_configuration(std::string_view path)
         const auto export_node = root["export"];
         if (export_node)
         {
+            auto keys = reject_unknown_keys(export_node,
+                { "type", "path", "on_error", "retries" }, "export");
+            if (!keys.has_value())
+                return Result<Configuration>(*keys.error());
             configuration.export_options.type = scalar(export_node, "type", "ndjson");
             configuration.export_options.path = scalar(export_node, "path");
             configuration.export_options.on_error = scalar(export_node, "on_error", "fail_batch");
             const auto retries = export_node["retries"];
             if (retries)
             {
+                auto retry_keys = reject_unknown_keys(retries,
+                    { "max_attempts", "initial_delay_ms", "max_delay_ms" },
+                    "export.retries");
+                if (!retry_keys.has_value())
+                    return Result<Configuration>(*retry_keys.error());
                 if (auto value = size_value(retries, "max_attempts"))
                     configuration.export_options.retries.max_attempts = *value;
                 if (auto value = size_value(retries, "initial_delay_ms"))
@@ -219,12 +248,20 @@ Result<Configuration> load_configuration(std::string_view path)
         const auto concurrency = root["concurrency"];
         if (concurrency)
         {
+            auto keys = reject_unknown_keys(concurrency,
+                { "workers", "result_order", "cpu_affinity" }, "concurrency");
+            if (!keys.has_value())
+                return Result<Configuration>(*keys.error());
             if (auto workers = size_value(concurrency, "workers"))
                 configuration.concurrency.workers = *workers;
             configuration.concurrency.result_order = scalar(concurrency, "result_order", "ordered");
             const auto affinity = concurrency["cpu_affinity"];
             if (affinity)
             {
+                auto affinity_keys = reject_unknown_keys(affinity,
+                    { "mode", "cpus", "required" }, "concurrency.cpu_affinity");
+                if (!affinity_keys.has_value())
+                    return Result<Configuration>(*affinity_keys.error());
                 configuration.concurrency.cpu_affinity.mode = scalar(affinity, "mode", "none");
                 configuration.concurrency.cpu_affinity.required = boolean(affinity, "required", false);
                 const auto cpus = affinity["cpus"];
@@ -236,6 +273,12 @@ Result<Configuration> load_configuration(std::string_view path)
         const auto limits = root["limits"];
         if (limits)
         {
+            auto keys = reject_unknown_keys(limits,
+                { "max_file_size_mb", "max_record_size_mb", "max_metadata_size_mb",
+                    "max_chunks_per_document", "max_files_per_directory", "max_memory_mb",
+                    "max_tokenizer_model_size_mb" }, "limits");
+            if (!keys.has_value())
+                return Result<Configuration>(*keys.error());
             configuration.limits.max_file_size_mb = size_value(limits, "max_file_size_mb");
             configuration.limits.max_record_size_mb = size_value(limits, "max_record_size_mb");
             configuration.limits.max_metadata_size_mb = size_value(limits, "max_metadata_size_mb");
@@ -247,6 +290,12 @@ Result<Configuration> load_configuration(std::string_view path)
         const auto telemetry = root["telemetry"];
         if (telemetry)
         {
+            auto keys = reject_unknown_keys(telemetry,
+                { "enabled", "exporter", "queue_size", "on_failure",
+                    "include_document_attributes", "endpoint", "token_env",
+                    "shutdown_timeout_ms" }, "telemetry");
+            if (!keys.has_value())
+                return Result<Configuration>(*keys.error());
             configuration.telemetry.enabled = boolean(telemetry, "enabled", false);
             configuration.telemetry.exporter = scalar(telemetry, "exporter", "none");
             configuration.telemetry.on_failure = scalar(telemetry, "on_failure", "warn");

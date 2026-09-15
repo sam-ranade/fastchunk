@@ -77,7 +77,7 @@ pub extern "C" fn fastchunk_huggingface_encode(
         }
     };
     let backend = unsafe { &*handle };
-    let encoding = match backend.tokenizer.encode(text, true) {
+    let encoding = match backend.tokenizer.encode(text, false) {
         Ok(value) => value,
         Err(message) => {
             set_error(error, format!("tokenizer encoding failed: {message}"));

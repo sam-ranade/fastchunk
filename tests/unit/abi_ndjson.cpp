@@ -3,6 +3,26 @@
 
 #include <string>
 
+TEST_CASE("C ABI tokenizer creation exposes complete errors", "[abi]")
+{
+    const fastchunk_bytes_t name {
+        reinterpret_cast<const unsigned char*>("missing-backend"), 15
+    };
+    fastchunk_tokenizer_t* tokenizer = nullptr;
+    fastchunk_error_t* error = nullptr;
+    const auto status = fastchunk_tokenizer_create(
+        &name, nullptr, &tokenizer, &error);
+
+    CHECK(status != 0);
+    CHECK(tokenizer == nullptr);
+    REQUIRE(error != nullptr);
+    fastchunk_error_view_t view {};
+    REQUIRE(fastchunk_error_get(error, &view) == 0);
+    CHECK(view.has_error == 1);
+    CHECK(view.code == 1000);
+    fastchunk_error_release(error);
+}
+
 TEST_CASE("C ABI NDJSON records preserve identity and source container",
     "[abi][ndjson]")
 {

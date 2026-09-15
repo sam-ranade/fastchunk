@@ -173,6 +173,14 @@ Long-running parallel loops periodically inspect an atomic state flag wrapped by
 
 If a caller sets the cancellation flag, worker threads stop further chunk allocations, release partial contexts, and return early with ErrorCode::cancelled.
 
+4.3 Input Path Lifetime and Restricted Roots
+Input paths and files are borrowed filesystem resources during processing. A
+caller MUST keep them present, readable, and unchanged until the operation
+completes. Replacing, renaming, truncating, or modifying an input during
+processing produces undefined results. The race-resistant root-anchored I/O
+required for `restricted_root` is planned; until implemented, configuring it
+returns `unsupported_option` rather than using a best-effort path check.
+
 5. Error Handling & Diagnostics Framework
 Errors and diagnostic events bypass standard C++ exceptions to maintain predictability across C ABI and foreign language runtimes.
 

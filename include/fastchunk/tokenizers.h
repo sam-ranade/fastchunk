@@ -29,6 +29,9 @@ private:
     std::string model_name_;
     void* backend_ { nullptr };
     std::string backend_error_;
+    std::uint32_t backend_error_code_ {
+        static_cast<std::uint32_t>(ErrorCode::tokenizer_unavailable)
+    };
 };
 
 // HuggingFace Tokenizer Adapter
@@ -47,6 +50,9 @@ private:
         nullptr
     }; // Opaque handle to underlying C-FFI / tokenizers-cpp instance
     std::string backend_error_;
+    std::uint32_t backend_error_code_ {
+        static_cast<std::uint32_t>(ErrorCode::tokenizer_unavailable)
+    };
 };
 
 // Factory interface for tokenizer instantiation
